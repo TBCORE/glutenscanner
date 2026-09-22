@@ -1,0 +1,160 @@
+OPEN FOOD FACTS DATA IN GLUTENSCANNER
+=====================================
+
+GlutenScanner contains information from Open Food Facts (openfoodfacts.org),
+which is made available under the Open Database License (ODbL):
+https://opendatacommons.org/licenses/odbl/1-0/
+
+This document is published under ODbL section 4.6(b). It describes the METHOD
+OF MAKING THE ALTERATIONS to the Open Food Facts database, so that anyone who
+receives our product information can reproduce the differences between Open
+Food Facts' database and ours.
+
+The source data is Open Food Facts' own public dump. We do not redistribute
+it - it can be downloaded directly from https://openfoodfacts.org/data
+
+
+WHAT WE START FROM
+------------------
+
+The food.parquet export from Open Food Facts. The whole dump is imported;
+no products are filtered out.
+
+From each product we read only these fields:
+
+    code, product_name, ingredients_text, brands, allergens, traces,
+    labels, nutriments, images, countries
+
+Everything else in the dump is discarded.
+
+
+THE ALTERATIONS, STEP BY STEP
+-----------------------------
+
+1. CHOOSING ONE LANGUAGE PER TEXT FIELD
+
+Open Food Facts stores names and ingredient lists as a list of {lang, text}
+entries. We reduce each to a single string using a fixed priority, falling
+back to the first non-empty entry if none of the preferred languages is
+present.
+
+    Product name      da, main, en, de, sv, nb, no, fi
+    Ingredient list   da, de, en, sv, nb, no, fi, main
+
+The Danish variants are additionally kept as their own fields
+(product_name_da, ingredients_text_da) where present.
+
+
+2. CLEANING THE TEXT
+
+Applied to product names and ingredient lists, in this order:
+
+    a. Remove NUL characters (0x00). This is the only character PostgreSQL
+       cannot store in text/jsonb, and a small number of products in the
+       world dump contain it.
+    b. Strip HTML tags. Open Food Facts marks allergens inline, for example
+       <span class="allergen">wheat</span>; we display plain text.
+    c. Unescape HTML entities.
+    d. Collapse all runs of whitespace to a single space, and trim.
+
+brands, allergens, traces and labels have NUL characters removed but are
+otherwise kept as they are.
+
+
+3. REDUCING THE NUTRIMENT LIST
+
+Only the per-100 g values for these ten nutriments are kept, each renamed
+from <name> to <name>_100g:
+
+    energy-kj, energy-kcal, energy, fat, saturated-fat, carbohydrates,
+    sugars, fiber, proteins, salt
+
+All other nutriments are discarded.
+
+
+4. RECONSTRUCTING IMAGE ADDRESSES
+
+Open Food Facts' dump gives an images list rather than URLs. We rebuild two
+addresses per product and store them. The images themselves are not copied
+and are served from Open Food Facts' own CDN.
+
+FRONT PHOTO - the front* entry is chosen, preferring front_da, then front_en,
+then the first available:
+
+    https://images.openfoodfacts.org/images/products/<code>/<key>.<rev>.400.jpg
+
+OCR TEXT - Open Food Facts runs OCR on uploaded photos and publishes the
+result next to the image as <imgid>.json. We store that address so the
+ingredient text can be fetched later:
+
+    https://images.openfoodfacts.org/images/products/<code>/<imgid>.json
+
+The photo is chosen among the entries whose key starts with "ingredients_"
+and which carry an imgid, ranked by the language suffix in the order
+da, de, en, sv, nb, no, fi; entries in any other language rank last. Note
+that this address is built from the image's imgid, not from the key and
+revision used for the front photo.
+
+In both addresses <code> is the barcode split into groups of three digits for
+barcodes longer than eight characters (3017620422003 becomes
+301/762/042/2003), and used unchanged for shorter ones - the same layout
+Open Food Facts uses.
+
+
+5. MAPPING COUNTRY TAGS
+
+Open Food Facts' country tags are mapped to two-letter codes and stored as an
+array, used only for internal coverage statistics:
+
+    en:denmark -> dk           en:germany -> de
+    en:sweden -> se            en:norway -> no
+    en:united-kingdom -> gb    en:france -> fr
+    en:spain -> es             en:italy -> it
+    en:switzerland -> ch       en:austria -> at
+    en:netherlands -> nl       en:belgium -> be
+    en:ireland -> ie           en:portugal -> pt
+    en:poland -> pl            en:finland -> fi
+    en:united-states -> us
+
+Tags outside this list are dropped. Products are NOT filtered by country.
+
+
+6. STORING THE RESULT
+
+One row per barcode. The fields above are stored as a single JSON object,
+alongside the barcode, the product name, the brand, the country array, and
+two flags recording whether the product has an ingredient list and whether
+it has an image.
+
+
+ALTERATIONS MADE AFTER THE IMPORT
+---------------------------------
+
+MISSING INGREDIENT LISTS ARE FILLED IN FROM OPEN FOOD FACTS' LIVE API.
+The dump is a snapshot, and products that were empty when it was taken often
+have an ingredient list by the time we look. Products without one are looked
+up individually against Open Food Facts' public product API, and the text is
+written in when it exists. The same cleaning rules as above are applied.
+
+MISSING INGREDIENT LISTS ARE ALSO FILLED IN FROM OPEN FOOD FACTS' OWN OCR.
+Using the address stored in step 4, the published OCR result is fetched and
+cleaned the same way.
+
+No other changes are made to Open Food Facts data after import.
+
+
+WHAT IS NOT OPEN FOOD FACTS DATA
+--------------------------------
+
+Our product table also contains records from other sources that are not
+covered by this licence, and user-submitted corrections that are layered on
+top of it when a product is looked up. Those records are not derived from
+Open Food Facts and are not offered under ODbL.
+
+
+ATTRIBUTION
+-----------
+
+Open Food Facts is credited inside the GlutenScanner app (Settings -> About)
+and in the footer of glutenscanner.info, in every supported language, with a
+reference to ODbL.
