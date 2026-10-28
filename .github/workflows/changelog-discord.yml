@@ -1,0 +1,89 @@
+name: Changelog til Discord
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  discord:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send commit-beskeder til Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_CHANGELOG_WEBHOOK }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+
+          GRAENSE = 3900
+          SPRING_OVER = ("Merge ", "Auto-sync")
+
+          webhook = os.environ.get("DISCORD_WEBHOOK", "")
+          if not webhook and not os.environ.get("DRY_RUN"):
+              print("DISCORD_CHANGELOG_WEBHOOK er ikke sat som secret - springer over.")
+              sys.exit(0)
+
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
+              event = json.load(f)
+
+          commits = [c for c in event.get("commits", []) if not c["message"].startswith(SPRING_OVER)]
+          if not commits:
+              print("Ingen commits at vise (kun merges).")
+              sys.exit(0)
+
+
+          def titel(c):
+              t = c["message"].split("\n", 1)[0].strip()
+              t = t.replace("[", "(").replace("]", ")")
+              return t if len(t) <= 160 else t[:159].rstrip() + "…"
+
+
+          linjer = []
+          laengde = 0
+          for i, c in enumerate(commits):
+              linje = f"[`{c['id'][:7]}`]({c['url']}) {titel(c)}"
+              if laengde + len(linje) + 1 > GRAENSE:
+                  linjer.append(f"… og {len(commits) - i} flere")
+                  break
+              linjer.append(linje)
+              laengde += len(linje) + 1
+
+          repo = event["repository"]["name"]
+          gren = event["ref"].removeprefix("refs/heads/")
+          payload = {
+              "username": "Changelog",
+              "allowed_mentions": {"parse": []},
+              "embeds": [
+                  {
+                      "title": f"{repo} · {gren}",
+                      "url": event.get("compare") or event["repository"]["html_url"],
+                      "description": "\n".join(linjer),
+                      "color": 0x2E9E5B,
+                      "footer": {"text": f"Pushet af {event['pusher']['name']}"},
+                      "timestamp": (event.get("head_commit") or {}).get("timestamp"),
+                  }
+              ],
+          }
+
+          if os.environ.get("DRY_RUN"):
+              print(json.dumps(payload, ensure_ascii=False, indent=2))
+              sys.exit(0)
+
+          req = urllib.request.Request(
+              webhook,
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Content-Type": "application/json", "User-Agent": "changelog-workflow (github actions)"},
+          )
+          try:
+              urllib.request.urlopen(req, timeout=20)
+          except urllib.error.HTTPError as e:
+              print(f"Discord svarede {e.code}: {e.read().decode('utf-8', 'replace')[:300]}")
+              sys.exit(1)
+          print(f"Sendte {len(commits)} commit(s) til Discord.")
+          PY
